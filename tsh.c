@@ -1,6 +1,6 @@
-/* 
+/*
  * tsh - A tiny shell program with job control
- * 
+ *
  * <Put your name and ID here>
  */
 #include <stdio.h>
@@ -25,7 +25,7 @@
 #define BG 2    /* running in background */
 #define ST 3    /* stopped */
 
-/* 
+/*
  * Jobs states: FG (foreground), BG (background), ST (stopped)
  * Job state transitions and enabling actions:
  *     FG -> ST  : ctrl-z
@@ -47,8 +47,11 @@ struct job_t
     pid_t pid;             /* job PID */
     int jid;               /* job ID [1, 2, ...] */
     int state;             /* UNDEF, BG, FG, or ST */
+    int if_ctrl_z_jobid;
     char cmdline[MAXLINE]; /* command line */
 };
+static int curr_ctrl_z_jobid = 1;
+static int curr_ctrl_z_numbers = 0;
 struct job_t jobs[MAXJOBS]; /* The job list */
 /* End global variables */
 
@@ -86,7 +89,7 @@ typedef void handler_t(int);
 handler_t *Signal(int signum, handler_t *handler);
 
 /*
- * main - The shell's main routine 
+ * main - The shell's main routine
  */
 int main(int argc, char **argv)
 {
@@ -157,17 +160,17 @@ int main(int argc, char **argv)
     exit(0); /* control never reaches here */
 }
 
-/* 
+/*
  * eval - Evaluate the command line that the user has just typed in
- * 
+ *
  * If the user has requested a built-in command (quit, jobs, bg or fg)
  * then execute it immediately. Otherwise, fork a child process and
  * run the job in the context of the child. If the job is running in
  * the foreground, wait for it to terminate and then return.  Note:
  * each child process must have a unique process group ID so that our
  * background children don't receive SIGINT (SIGTSTP) from the kernel
- * when we type ctrl-c (ctrl-z) at the keyboard.  
-*/
+ * when we type ctrl-c (ctrl-z) at the keyboard.
+ */
 void eval(char *cmdline)
 {
     char **argv = (char **)malloc(sizeof(char *) * MAXARGS);
@@ -178,24 +181,27 @@ void eval(char *cmdline)
     int bg = parseline(cmdline, argv);
 
     int in = builtin_cmd(argv);
-    if (in == 1) return;
+    if (in == 1)
+        return;
 
     pid_t pid = fork();
     addjob(jobs, pid, bg == 1 ? BG : FG, cmdline);
-    if (pid == 0) {
+    if (pid == 0)
+    {
         system(cmdline);
-    } else {
-        
+    }
+    else
+    {
     }
     return;
 }
 
-/* 
+/*
  * parseline - Parse the command line and build the argv array.
- * 
+ *
  * Characters enclosed in single quotes are treated as a single
  * argument.  Return true if the user has requested a BG job, false if
- * the user has requested a FG job.  
+ * the user has requested a FG job.
  */
 int parseline(const char *cmdline, char **argv)
 {
@@ -253,9 +259,9 @@ int parseline(const char *cmdline, char **argv)
     return bg;
 }
 
-/* 
+/*
  * builtin_cmd - If the user has typed a built-in command then execute
- *    it immediately.  
+ *    it immediately.
  */
 int builtin_cmd(char **argv)
 {
@@ -278,12 +284,12 @@ int builtin_cmd(char **argv)
     return 0; /* not a builtin command */
 }
 
-/* 
+/*
  * do_bgfg - Execute the builtin bg and fg commands
  */
 void do_bgfg(char **argv)
 {
-    struct job_t* job;
+    struct job_t *job = NULL;
 
     if (argv[1][0] == '%')
     {
@@ -294,15 +300,49 @@ void do_bgfg(char **argv)
         job = getjobpid(jobs, atoi(argv[1]));
     }
 
-    if (strcmp(argv[0], "fg") == 0) {
-        
-    } else {
+    if (strcmp(argv[0], "fg") == 0 && job)
+    {
 
+        int ctrl_z_job_id = job->if_ctrl_z_jobid;
+        job->if_ctrl_z_jobid = 0;
+        if(curr_ctrl_z_numbers == 1)
+        {
+            curr_ctrl_z_numbers = 0;
+            curr_ctrl_z_jobid = 1;
+        }
+        else
+        {
+            if((ctrl_z_job_id + 1) == curr_ctrl_z_jobid)
+            {
+                curr_ctrl_z_jobid = ctrl_z_job_id;
+            }
+            --curr_ctrl_z_numbers;
+
+        }
+        char cmd[6];
+        cmd[0] = 'f';
+        cmd[1] = 'g';
+        cmd[2] = ' ';
+        if(ctrl_z_job_id >= 10)
+        {
+            cmd[3] = '1';
+            cmd[4] = '0' + (ctrl_z_job_id % 10);
+            cmd[5] = '\0';
+        }
+        else
+        {
+            cmd[3] = '0' + ctrl_z_job_id;
+            cmd[4] = '\0';
+        }
+        system(cmd);
+    }
+    else
+    {
     }
     return;
 }
 
-/* 
+/*
  * waitfg - Block until process pid is no longer the foreground process
  */
 void waitfg(pid_t pid)
@@ -315,35 +355,55 @@ void waitfg(pid_t pid)
  * Signal handlers
  *****************/
 
-/* 
+/*
  * sigchld_handler - The kernel sends a SIGCHLD to the shell whenever
  *     a child job terminates (becomes a zombie), or stops because it
  *     received a SIGSTOP or SIGTSTP signal. The handler reaps all
  *     available zombie children, but doesn't wait for any other
- *     currently running children to terminate.  
+ *     currently running children to terminate.
  */
 void sigchld_handler(int sig)
 {
     return;
 }
 
-/* 
+/*
  * sigint_handler - The kernel sends a SIGINT to the shell whenver the
  *    user types ctrl-c at the keyboard.  Catch it and send it along
- *    to the foreground job.  
+ *    to the foreground job.
  */
 void sigint_handler(int sig)
 {
+    int fg_pid = fgpid(jobs);
+    if (fg_pid)
+    {
+        kill(fg_pid, SIGINT);
+    }
     return;
 }
 
 /*
  * sigtstp_handler - The kernel sends a SIGTSTP to the shell whenever
  *     the user types ctrl-z at the keyboard. Catch it and suspend the
- *     foreground job by sending it a SIGTSTP.  
+ *     foreground job by sending it a SIGTSTP.
  */
 void sigtstp_handler(int sig)
 {
+    int fg_pid = fgpid(jobs);
+    if (fg_pid)
+    {
+        kill(fg_pid, SIGSTOP);
+        for(int i = 0; i < MAXJOBS; ++i)
+        {
+            if(jobs[i].pid == fg_pid)
+            {
+                jobs[i].if_ctrl_z_jobid = curr_ctrl_z_jobid;
+                ++curr_ctrl_z_jobid;
+                ++curr_ctrl_z_numbers;
+                break;
+            }
+        }
+    }
     return;
 }
 
@@ -461,7 +521,7 @@ struct job_t *getjobpid(struct job_t *jobs, pid_t pid)
 struct job_t *getjobjid(struct job_t *jobs, int jid)
 {
     int i;
-
+    printf("%d\n", jid);
     if (jid < 1)
         return NULL;
     for (i = 0; i < MAXJOBS; i++)
